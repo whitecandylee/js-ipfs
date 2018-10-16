@@ -50,6 +50,7 @@ module.exports = function init (self) {
 
     opts.emptyRepo = opts.emptyRepo || false
     opts.bits = Number(opts.bits) || 2048
+    opts.keyType = opts.keyType || 'ed25519'
     opts.log = opts.log || function () {}
 
     const config = defaultsDeep(self._options.config, defaultConfig())
@@ -73,9 +74,12 @@ module.exports = function init (self) {
           }
         } else {
           // Generate peer identity keypair + transform to desired format + add to config.
-          opts.log(`generating ${opts.bits}-bit RSA keypair...`, false)
-          self.log('generating peer id: %s bits', opts.bits)
-          peerId.create({ bits: opts.bits }, cb)
+          opts.log(`generating ${opts.bits}-bit ${opts.keyType.toUpperCase()} keypair...`, false)
+          self.log('generating peer id: %s bits, %s key type', opts.bits, opts.keyType)
+          peerId.create({
+            bits: opts.bits,
+            type: opts.keyType
+          }, cb)
         }
       },
       (peerId, cb) => {
