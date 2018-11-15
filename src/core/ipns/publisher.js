@@ -1,7 +1,6 @@
 'use strict'
 
 const PeerId = require('peer-id')
-const Record = require('libp2p-record').Record
 const { Key } = require('interface-datastore')
 const series = require('async/series')
 const errcode = require('err-code')
@@ -57,7 +56,6 @@ class IpnsPublisher {
       log.error(errMsg)
       return callback(errcode(new Error(errMsg), 'ERR_INVALID_PEER_ID'))
     }
-
     const publicKey = peerId._pubKey
 
     ipns.embedPublicKey(publicKey, record, (err, embedPublicKeyRecord) => {
@@ -97,19 +95,17 @@ class IpnsPublisher {
       return callback(errcode(new Error(errMsg), 'ERR_INVALID_DATASTORE_KEY'))
     }
 
-    let rec
+    let entryData
     try {
       // Marshal record
-      const entryData = ipns.marshal(entry)
-      // Marshal to libp2p record
-      rec = new Record(key.toBuffer(), entryData)
+      entryData = ipns.marshal(entry)
     } catch (err) {
       log.error(err)
       return callback(err)
     }
 
     // Add record to routing (buffer key)
-    this._routing.put(key.toBuffer(), rec.serialize(), (err, res) => {
+    this._routing.put(key.toBuffer(), entryData, (err, res) => {
       if (err) {
         const errMsg = `ipns record for ${key.toString()} could not be stored in the routing`
 
@@ -137,17 +133,8 @@ class IpnsPublisher {
       return callback(errcode(new Error(errMsg), 'ERR_UNDEFINED_PARAMETER'))
     }
 
-    let rec
-    try {
-      // Marshal to libp2p record
-      rec = new Record(key.toBuffer(), publicKey.bytes)
-    } catch (err) {
-      log.error(err)
-      return callback(err)
-    }
-
     // Add public key to routing (buffer key)
-    this._routing.put(key.toBuffer(), rec.serialize(), (err, res) => {
+    this._routing.put(key.toBuffer(), publicKey.bytes, (err, res) => {
       if (err) {
         const errMsg = `public key for ${key.toString()} could not be stored in the routing`
 
@@ -174,45 +161,55 @@ class IpnsPublisher {
     const checkRouting = !(options.checkRouting === false)
 
     this._repo.datastore.get(ipns.getLocalKey(peerId.id), (err, dsVal) => {
-      let result
-
       if (err) {
         if (err.code !== 'ERR_NOT_FOUND') {
           const errMsg = `unexpected error getting the ipns record ${peerId.id} from datastore`
 
           log.error(errMsg)
           return callback(errcode(new Error(errMsg), 'ERR_UNEXPECTED_DATASTORE_RESPONSE'))
-        } else {
-          if (!checkRouting) {
-            return callback(null, null)
-          } else {
-            // TODO ROUTING - get from DHT
-            return callback(new Error('not implemented yet'))
-          }
         }
-      }
 
-      if (Buffer.isBuffer(dsVal)) {
-        result = dsVal
+        if (!checkRouting) {
+          return callback(null, null)
+        }
+
+        // Try to get from routing
+        let keys
+        try {
+          keys = ipns.getIdKeys(peerId.toBytes())
+        } catch (err) {
+          log.error(err)
+          return callback(err)
+        }
+
+        this._routing.get(keys.routingKey, (err, res) => {
+          if (err) {
+            log(`error when determining the last published IPNS record for ${peerId.id}`)
+            return callback(null, null)
+          }
+
+          // unmarshal data
+          this._unmarshalData(res, callback)
+        })
       } else {
-        const errMsg = `found ipns record that we couldn't convert to a value`
-
-        log.error(errMsg)
-        return callback(errcode(new Error(errMsg), 'ERR_INVALID_IPNS_RECORD'))
+        // unmarshal data
+        this._unmarshalData(dsVal, callback)
       }
-
-      // unmarshal data
-      try {
-        result = ipns.unmarshal(dsVal)
-      } catch (err) {
-        const errMsg = `found ipns record that we couldn't convert to a value`
-
-        log.error(errMsg)
-        return callback(null, null)
-      }
-
-      callback(null, result)
     })
+  }
+
+  _unmarshalData (data, callback) {
+    let result
+    try {
+      result = ipns.unmarshal(data)
+    } catch (err) {
+      const errMsg = `found ipns record that we couldn't convert to a value`
+
+      log.error(errMsg)
+      return callback(null, null)
+    }
+
+    callback(null, result)
   }
 
   _updateOrCreateRecord (privKey, value, validity, peerId, callback) {
@@ -224,7 +221,7 @@ class IpnsPublisher {
     }
 
     const getPublishedOptions = {
-      checkRouting: false // TODO ROUTING - change to true
+      checkRouting: true
     }
 
     this._getPublished(peerId, getPublishedOptions, (err, record) => {
